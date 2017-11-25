@@ -1007,7 +1007,7 @@ define %d0 @d0.new(i64 %capacity) {
   %valSizePtr = getelementptr %s1, %s1* null, i32 1
   %valSize = ptrtoint %s1* %valSizePtr to i32
   %dict = call i8* @weld_rt_dict_new(i32 %keySize, i32 (i8*, i8*)* @s0.eq_on_pointers,
-  i32 %valSize, i32 %valSize, i64 500000000, i64 %capacity)
+  i32 %valSize, i32 %valSize, i64 100000000000, i64 %capacity)
   ret %d0 %dict
 }
 

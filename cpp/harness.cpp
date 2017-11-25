@@ -4,12 +4,12 @@
 #include <stdint.h>
 #include <string.h>
 #include <assert.h>
+#include <algorithm>
 #include <sys/time.h>
 
 #include "include/common.h"
 
 using namespace nvl;
-using namespace std;
 
 void print();
 int32_t *get_global();
@@ -78,7 +78,8 @@ int main(int argc, char **argv) {
     v1.ptr[i].ptr[0] = i;
   }
   */
-
+  assert(LEN % MOD == 0);
+  int copies_per_key = LEN / MOD;
   vec<i32> v1 = make_vec<i32>(LEN);
   vec<i32> v2 = make_vec<i32>(LEN);
   vec<float> v3 = make_vec<float>(LEN);
@@ -87,15 +88,16 @@ int main(int argc, char **argv) {
   vec<i32> v6 = make_vec<i32>(LEN);
   vec<float> v7 = make_vec<float>(LEN);
   for (int i = 0; i < LEN; i++) {
-    int next_key = rand() % MOD;
-    v1.ptr[i] = next_key >> 16;
-    v2.ptr[i] = next_key & ((1 << 16) - 1);
+    int next_key = i / copies_per_key;
+    v1.ptr[i] = 0; // next_key >> 16;
+    v2.ptr[i] = next_key; // next_key & ((1 << 16) - 1);
     *(int *)(v3.ptr + i) = rand();
     *(int *)(v4.ptr + i) = rand();
     *(int *)(v5.ptr + i) = rand();
-    v6.ptr[i] = rand();
+    v6.ptr[i] = (rand() % 2) == 0 ? 19980901 : 19980902;
     *(int *)(v7.ptr + i) = rand();
   }
+  std::random_shuffle(v2.ptr, v2.ptr + LEN);
 
   struct arguments a;
   a._1 = v1;
@@ -110,20 +112,20 @@ int main(int argc, char **argv) {
   struct input in;
   in.in = (int64_t)&a;
   in.nworkers = atoi(argv[2]);
-  in.mem_limit = 1000000000;
+  in.mem_limit = 200000000000L;
 
-  getchar();
+  // getchar();
   struct timeval start, end, diff;
   gettimeofday(&start, 0);
-  printf("running...\n");
+  // printf("running...\n");
   weld_runtime_init();
   output res = *run(&in);
-  printf("err: %lld\n", res.errno);
+  // printf("err: %ld\n", res.errno);
   vec<kv> vec_res = *((vec<kv>*)res.out);
   gettimeofday(&end, 0);
   timersub(&end, &start, &diff);
-  printf("Weld: %ld.%06ld\n", (long)diff.tv_sec, (long)diff.tv_usec);
-  printf("len: %lld\n", vec_res.size);
+  printf("%ld.%06ld\n", (long)diff.tv_sec, (long)diff.tv_usec);
+  // printf("len: %ld\n", vec_res.size);
   /*
   for (int i = 0; i < vec_res.size; i++) {
     printf("len_inner: %lld\n", vec_res.ptr[i].size);

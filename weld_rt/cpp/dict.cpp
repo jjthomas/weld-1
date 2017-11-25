@@ -1,5 +1,6 @@
 #include "runtime.h"
 #include "assert.h"
+#include "stdio.h"
 #include <algorithm>
 
 // power of 2
