@@ -67,7 +67,7 @@ extern "C" void weld_runtime_init();
 // Setup and call run() here.
 
 int main(int argc, char **argv) {
-  const unsigned LEN = atoi(argv[1]);
+  const long LEN = atol(argv[1]);
   const unsigned MOD = atoi(argv[3]);
   const unsigned PRINT = atoi(argv[4]);
 
@@ -79,7 +79,7 @@ int main(int argc, char **argv) {
   }
   */
   assert(LEN % MOD == 0);
-  int copies_per_key = LEN / MOD;
+  long copies_per_key = LEN / MOD;
   vec<i32> v1 = make_vec<i32>(LEN);
   vec<i32> v2 = make_vec<i32>(LEN);
   vec<float> v3 = make_vec<float>(LEN);
@@ -87,7 +87,7 @@ int main(int argc, char **argv) {
   vec<float> v5 = make_vec<float>(LEN);
   vec<i32> v6 = make_vec<i32>(LEN);
   vec<float> v7 = make_vec<float>(LEN);
-  for (int i = 0; i < LEN; i++) {
+  for (long i = 0; i < LEN; i++) {
     int next_key = i / copies_per_key;
     v1.ptr[i] = 0; // next_key >> 16;
     v2.ptr[i] = next_key; // next_key & ((1 << 16) - 1);
