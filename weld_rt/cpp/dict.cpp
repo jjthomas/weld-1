@@ -156,10 +156,15 @@ inline void *simple_dict_lookup(weld_dict *wd, simple_dict *sd, int32_t hash, vo
   return NULL;
 }
 
-inline void resize_dict(weld_dict *wd, simple_dict *sd) {
+inline void resize_dict(weld_dict *wd, simple_dict *sd, int64_t target_cap) {
+  if (sd->capacity >= target_cap) {
+    return;
+  }
   void *old_data = sd->data;
   int64_t old_capacity = sd->capacity;
-  sd->capacity *= 2;
+  while (sd->capacity < target_cap) {
+    sd->capacity *= 2;
+  }
   sd->data = weld_run_malloc(weld_rt_get_run_id(), sd->capacity * slot_size(wd));
   memset(sd->data, 0, sd->capacity * slot_size(wd));
   for (int64_t i = 0; i < old_capacity; i++) {
@@ -203,7 +208,7 @@ extern "C" void weld_rt_dict_put(void *d, void *slot) {
       simple_dict *local = get_local_dict(wd);
       local->size++;
       if (should_resize_dict_at_size(local->size, local)) {
-        resize_dict(wd, local);
+        resize_dict(wd, local, local->capacity * 2);
       } else if (should_resize_dict_at_size(local->size + 1, local) &&
         local->capacity * 2 * slot_size(wd) > wd->max_local_bytes) {
         local->full = true;
@@ -222,7 +227,7 @@ extern "C" void weld_rt_dict_put(void *d, void *slot) {
           pthread_rwlock_wrlock(&wd->global_lock);
         }
         if (should_resize_dict_at_size(global->size, global)) {
-          resize_dict(wd, global);
+          resize_dict(wd, global, global->capacity * 2);
         }
       }
       if (!wd->finalized) {
@@ -245,6 +250,16 @@ inline void advance_finalize_iterator(weld_dict *wd) {
 
 extern "C" void *weld_rt_dict_finalize_next_local_slot(void *d) {
   weld_dict *wd = (weld_dict *)d;
+  if (!wd->finalized) {
+    int64_t max_cap = 0;
+    for (int32_t i = 0; i < wd->n_workers; i++) {
+      simple_dict *sd = get_dict_at_index(wd, i);
+      if (sd->capacity > max_cap) {
+        max_cap = sd->capacity;
+      }
+    }
+    resize_dict(wd, get_global_dict(wd), max_cap);
+  }
   wd->finalized = true; // immediately mark as finalized ... we expect the client to keep
   // calling this method until it returns NULL, and only after this perform other operations
   // on the dictionary
