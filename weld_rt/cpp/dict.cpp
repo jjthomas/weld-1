@@ -130,6 +130,7 @@ extern "C" void *weld_rt_dict_new(int32_t key_size, int32_t (*keys_eq)(void *, v
     if (i != wd->n_workers) {
       global_buffer *b = get_global_buffer_at_index(wd, i);
       b->data = weld_run_malloc(weld_rt_get_run_id(), GLOBAL_BATCH_SIZE * slot_size(wd));
+      memset(b->data, 0, GLOBAL_BATCH_SIZE * slot_size(wd));
       b->size = 0;
     }
     simple_dict *d = get_dict_at_index(wd, i);
@@ -280,6 +281,7 @@ static void drain_global_buffer(weld_dict *wd, global_buffer *b) {
     void *buf_slot = slot_at_with_data(i, wd, b->data);
     int32_t hash = *hash_at(wd, buf_slot);
     void *global_slot = simple_dict_lookup(wd, global, hash, key_at(buf_slot), true, true, global->capacity);
+    // TODO this is fundamentally wrong, need to do a merge
     memcpy(key_at(global_slot), key_at(buf_slot), wd->val_size + wd->key_size);
     dict_put_single(wd, global_slot);
   }
