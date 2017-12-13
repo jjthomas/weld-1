@@ -6,6 +6,7 @@
 // power of 2
 #define LOCK_GRANULARITY 16
 #define MAX_LOCAL_PROBES 5
+#define GLOBAL_BATCH_SIZE 16
 
 struct simple_dict {
   void *data;
@@ -14,8 +15,15 @@ struct simple_dict {
   bool full; // only local dicts should be marked as full
 };
 
+// per-thread buffer for global writes
+struct global_buffer {
+  void *data;
+  int32_t size;
+};
+
 struct weld_dict {
   void *dicts; // one dict per thread plus a global dict
+  void *global_buffers;
   int32_t key_size;
   int32_t (*keys_eq)(void *, void *);
   int32_t val_size;
@@ -81,6 +89,21 @@ inline simple_dict *get_dict_at_index(weld_dict *wd, int32_t i) {
   return (simple_dict *)weld_rt_get_merger_at_index(wd->dicts, sizeof(simple_dict), i);
 }
 
+inline global_buffer *get_global_buffer_at_index(weld_dict *wd, int32_t i) {
+  return (global_buffer *)weld_rt_get_merger_at_index(wd->global_buffers, sizeof(global_buffer), i);
+}
+
+inline global_buffer *get_my_global_buffer(weld_dict *wd) {
+  return get_global_buffer_at_index(wd, weld_rt_thread_id());
+}
+
+inline bool slot_in_global_buffer(weld_dict *wd, void *slot) {
+  global_buffer *my_buf = get_my_global_buffer(wd);
+  intptr_t slot_int = (intptr_t)slot;
+  return slot_int >= (intptr_t)my_buf->data &&
+    slot_int < (intptr_t)((uint8_t *)my_buf->data + slot_size(wd) * GLOBAL_BATCH_SIZE);
+}
+
 inline simple_dict *get_local_dict(weld_dict *wd) {
   return get_dict_at_index(wd, weld_rt_thread_id());
 }
@@ -102,13 +125,19 @@ extern "C" void *weld_rt_dict_new(int32_t key_size, int32_t (*keys_eq)(void *, v
   wd->max_local_bytes = max_local_bytes;
   wd->n_workers = weld_rt_get_nworkers();
   wd->dicts = weld_rt_new_merger(sizeof(simple_dict), wd->n_workers + 1);
+  wd->global_buffers = weld_rt_new_merger(sizeof(global_buffer), wd->n_workers);
   for (int32_t i = 0; i < wd->n_workers + 1; i++) {
+    if (i != wd->n_workers) {
+      global_buffer *b = get_global_buffer_at_index(wd, i);
+      b->data = weld_run_malloc(weld_rt_get_run_id(), GLOBAL_BATCH_SIZE * slot_size(wd));
+      b->size = 0;
+    }
     simple_dict *d = get_dict_at_index(wd, i);
     d->size = 0;
     d->capacity = capacity;
-    d->data = weld_run_malloc(weld_rt_get_run_id(), capacity * slot_size(wd));
+    d->data = weld_run_malloc(weld_rt_get_run_id(), d->capacity * slot_size(wd));
     d->full = max_local_bytes == 0;
-    memset(d->data, 0, capacity * slot_size(wd));
+    memset(d->data, 0, d->capacity * slot_size(wd));
   }
   pthread_rwlock_init(&wd->global_lock, NULL);
   return (void *)wd;
@@ -192,15 +221,17 @@ extern "C" void *weld_rt_dict_lookup(void *d, int32_t hash, void *key) {
     }
   }
   if (!wd->finalized) {
-    // take the lock since if we are not finalized, there are still writes going on
-    pthread_rwlock_rdlock(&wd->global_lock);
+    global_buffer *buf = get_my_global_buffer(wd);
+    void *buf_slot = slot_at_with_data(buf->size, wd, buf->data);
+    *hash_at(wd, buf_slot) = hash;
+    return buf_slot;
+  } else {
+    simple_dict *global = get_global_dict(wd);
+    return simple_dict_lookup(wd, global, hash, key, true, true, global->capacity);
   }
-  simple_dict *global = get_global_dict(wd);
-  return simple_dict_lookup(wd, global, hash, key, true, true, global->capacity);
 }
 
-extern "C" void weld_rt_dict_put(void *d, void *slot) {
-  weld_dict *wd = (weld_dict *)d;
+static void dict_put_single(weld_dict *wd, void *slot) {
   uint8_t old_filled = *filled_at(slot);
   if (!old_filled) {
     *filled_at(slot) = 1;
@@ -229,14 +260,45 @@ extern "C" void weld_rt_dict_put(void *d, void *slot) {
         if (should_resize_dict_at_size(global->size, global)) {
           resize_dict(wd, global, global->capacity * 2);
         }
-      }
-      if (!wd->finalized) {
-        pthread_rwlock_unlock(&wd->global_lock);
+        if (!wd->finalized) {
+          pthread_rwlock_unlock(&wd->global_lock);
+          pthread_rwlock_rdlock(&wd->global_lock);
+        }
       }
     }
   } else if (!wd->finalized && !slot_in_local(wd, slot)) {
     *lock_for_slot(wd, get_global_dict(wd), slot) = 0;
+  }
+}
+
+static void drain_global_buffer(weld_dict *wd, global_buffer *b) {
+  simple_dict *global = get_global_dict(wd);
+  if (!wd->finalized) {
+    pthread_rwlock_rdlock(&wd->global_lock);
+  }
+  for (int32_t i = 0; i < b->size; i++) {
+    void *buf_slot = slot_at_with_data(i, wd, b->data);
+    int32_t hash = *hash_at(wd, buf_slot);
+    void *global_slot = simple_dict_lookup(wd, global, hash, key_at(buf_slot), true, true, global->capacity);
+    memcpy(key_at(global_slot), key_at(buf_slot), wd->val_size + wd->key_size);
+    dict_put_single(wd, global_slot);
+  }
+  if (!wd->finalized) {
     pthread_rwlock_unlock(&wd->global_lock);
+  }
+  b->size = 0;
+}
+
+extern "C" void weld_rt_dict_put(void *d, void *slot) {
+  weld_dict *wd = (weld_dict *)d;
+  if (slot_in_global_buffer(wd, slot)) {
+    global_buffer *my_buf = get_my_global_buffer(wd);
+    my_buf->size++;
+    if (my_buf->size == GLOBAL_BATCH_SIZE) {
+      drain_global_buffer(wd, my_buf);
+    }
+  } else {
+    dict_put_single(wd, slot);
   }
 }
 
@@ -259,6 +321,9 @@ extern "C" void *weld_rt_dict_finalize_next_local_slot(void *d) {
       }
     }
     resize_dict(wd, get_global_dict(wd), max_cap);
+    for (int32_t i = 0; i < wd->n_workers; i++) {
+      drain_global_buffer(wd, get_global_buffer_at_index(wd, i));
+    }
   }
   wd->finalized = true; // immediately mark as finalized ... we expect the client to keep
   // calling this method until it returns NULL, and only after this perform other operations
