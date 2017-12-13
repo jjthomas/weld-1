@@ -6,7 +6,7 @@
 // power of 2
 #define LOCK_GRANULARITY 16
 #define MAX_LOCAL_PROBES 5
-#define GLOBAL_BATCH_SIZE 16
+#define GLOBAL_BATCH_SIZE 128
 
 struct simple_dict {
   void *data;
